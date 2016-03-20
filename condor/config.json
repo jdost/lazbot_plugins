@@ -1,0 +1,13 @@
+{
+   "plugin": "condor",
+   "config": {
+      "opendev": {
+         "epoch": {
+            "year": 2015,
+            "month": 9,
+            "day": 18
+         },
+         "offset": 14
+      }
+   }
+}

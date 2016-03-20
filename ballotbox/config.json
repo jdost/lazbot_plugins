@@ -1,0 +1,6 @@
+{
+   "plugin": "ballotbox",
+   "db": true,
+   "config": {
+   }
+}

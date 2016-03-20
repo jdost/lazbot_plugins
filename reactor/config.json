@@ -1,0 +1,8 @@
+{
+   "plugin": "reactor",
+   "config": {
+      "reactions": {
+         "jeff": ["wow"]
+      }
+   }
+}
