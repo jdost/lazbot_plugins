@@ -1,12 +1,12 @@
 from app import bot, config
 from lazbot import logger
-from condor import is_opendev
 
 reactions = config.get("reactions", {})
 
 
 @bot.listen("*", channel="#smash-chicago")
-def react(user, channel, ts, *args, **kwargs):
+def react(user, msg):
+    from condor import is_opendev
     if not is_opendev():
         return
 
@@ -19,11 +19,7 @@ def react(user, channel, ts, *args, **kwargs):
 
         for emoji in reactions[user.name]:
             try:
-                bot.client.reactions.add(
-                    name=emoji,
-                    channel=channel.id,
-                    timestamp=ts
-                )
+                msg.react(emoji)
             except Exception as e:
                 logger.error("Reaction %s for %s failed: %s",
                              emoji, user.name, e)

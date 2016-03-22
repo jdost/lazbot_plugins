@@ -3,8 +3,7 @@ from lazbot import db
 from lazbot import utils
 from lazbot import logger
 from collections import Counter
-from lazbot.schedule import tz
-from lazbot.events import Message
+from lazbot.models import Message
 import parsedatetime
 
 
@@ -20,6 +19,8 @@ polls = []
 def load():
     global polls
     polls = [Poll.from_json(json) for json in db.get("polls", [])]
+    logger.info("Loaded %s active polls",
+                len([True for p in polls if p.state != Poll.CLOSED]))
 
 
 @bot.teardown(priority=True)
@@ -27,70 +28,47 @@ def save():
     db["polls"] = [poll.__json__() for poll in polls]
 
 
-@bot.listen("@me: ask <channel:target> <*:question>", regex=True)
-@bot.listen("@me: ask <*:question>", regex=True)
-def start(channel, question, user, target=None):
-    if not target:
-        target = channel
-
-    poll = Poll(question, user, target)
-
-    logger.info(str(poll))
-    poll.ask()
-    polls.append(poll)
-
-
-@bot.listen("@me: close poll")
-@bot.listen("@me: close poll <*:time>", regex=True)
-def close(channel, user, time=None):
-    target_poll = None
-    for poll in polls:
-        if poll.state == Poll.OPEN and poll.is_target(user, channel):
-            target_poll = poll
-            break
-
-    if not target_poll:
-        return  # spit out error
-
-    if time:
-        target_time, _ = parsedatetime.Calendar().parseDT(time, tzinfo=tz())
-        target_poll.schedule(target_time)
-    else:
-        target_poll.close()
-
-
 class Poll(object):
     INIT = "initialized"
     OPEN = "open"
     CLOSED = "closed"
 
+    BOOLEAN = "boolean"
+
     def __init__(self, question, asker, target):
         self.question = question
         self.requester = asker
         self.channel = target
-        self.boolean = True
+        self.type = Poll.BOOLEAN
         self.msg = None
         self.state = Poll.INIT
         self.close_at = None
         self.results = {}
 
-    @classmethod
-    def from_json(cls, json):
-        poll = Poll(json["question"], json["requester"], json["channel"])
-        poll.state = json["state"]
-        poll.msg = Message.from_json(json["msg"])
-        if json.get("close_at"):
-            poll.schedule(json["close_at"])
+        polls.append(self)
 
     def __json__(self):
         return {
             "question": self.question,
-            "requester": self.requester,
-            "channel": self.channel,
+            "requester": self.requester.id,
+            "channel": self.channel.id,
             "state": self.state,
             "msg": self.msg.__json__(),
-            "close_at": self.close_at
+            "close_at": self.close_at.isoformat(' ') if self.close_at else None
         }
+
+    @classmethod
+    def from_json(cls, json):
+        poll = Poll(json["question"], bot.get_user(json["requester"]),
+                    bot.get_channel(json["channel"]))
+        poll.state = json["state"]
+        poll.msg = Message.from_json(json["msg"])
+        if json.get("close_at") and poll.state != Poll.CLOSED:
+            close_at, _ = parsedatetime.Calendar().parseDT(
+                json.get("close_at"))
+            poll.schedule(json["close_at"])
+
+        return poll
 
     def ask(self):
         self.msg = bot.post(
@@ -99,39 +77,16 @@ class Poll(object):
                                                      self.requester),
         )
 
-        if self.boolean:
-            print self.msg.timestamp
+        if self.type is Poll.BOOLEAN:
             for vote, emoji in EMOJI.items():
-                bot.client.reactions.add(
-                    name=emoji,
-                    channel=self.msg.channel.id,
-                    timestamp=self.msg.timestamp
-                )
+                self.msg.react(emoji)
                 self.results[vote] = []
 
         self.state = Poll.OPEN
 
     def close(self):
         self.state = Poll.CLOSED
-        reactions_raw = bot.client.reactions.get(
-            channel=self.channel.id,
-            timestamp=self.msg.timestamp,
-            full=True
-        ).body["message"]["reactions"]
-
-        reactions = {}
-        for reaction in reactions_raw:
-            reactions[reaction["name"]] = reaction["users"]
-
-        for (result, emoji) in EMOJI.items():
-            self.results[result] = set(reactions[emoji])
-
-        votes = Counter([vote for votes in self.results.values() for vote
-                         in votes])
-        multi_voters = set([v for (v, cnt) in votes.items() if cnt > 1])
-        for result in self.results:
-            self.results[result] = map(
-                bot.get_user, set(self.results[result]) - multi_voters)
+        self.tally()
 
         logger.info("Poll closed")
         logger.info(str(self))
@@ -155,10 +110,47 @@ class Poll(object):
                             len(voters), vote, ", ".join(map(str, voters)))
                     )
 
-        self.msg.update(self.results_msg.__url__())
+        # self.msg.update(self.results_msg.__url__())
 
-    def is_target(self, user, channel):
-        return self.requester == user and self.channel == channel
+    def tally(self):
+        self.results = self.gather()
+        votes = Counter([vote for votes in self.results.values() for vote
+                         in votes])
+
+        multi_voters = set([v for (v, cnt) in votes.items() if cnt > 1])
+        for result in self.results:
+            self.results[result] = map(
+                bot.get_user, set(self.results[result]) - multi_voters)
+
+    def gather(self):
+        return self._gather_boolean() if self.type is Poll.BOOLEAN \
+                else self._gather()
+
+    def _gather_boolean(self):
+        reactions_raw = self.msg.get_reactions()
+
+        reactions = {}
+        results = {}
+        for reaction in reactions_raw:
+            reactions[reaction["name"]] = reaction["users"]
+
+        for (result, emoji) in EMOJI.items():
+            results[result] = set(reactions[emoji])
+
+        return results
+
+    def _gather(self):
+        return {}
+
+    def matches(self, user=None, channel=None, state=None):
+        return (self.requester == user if user else True) and \
+            (self.channel == channel if channel else True) and \
+            (self.state == state if state else True)
+
+    @classmethod
+    def find(cls, user=None, channel=None, state="open"):
+        query = {"user": user, "channel": channel, "state": state}
+        return [p for p in polls if p.matches(**query)]
 
     def schedule(self, target_time):
         self.close_at = target_time
