@@ -1,0 +1,10 @@
+{
+   "plugin": "chance",
+   "config": {
+      "die": {
+         "dice": 6,
+         "die": 6,
+         "d20": 20
+      }
+   }
+}
