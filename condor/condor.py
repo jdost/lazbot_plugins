@@ -1,3 +1,8 @@
+''' A time tracker for Open Dev days
+
+Detects when a day is open dev so playful commands and handlers don't spam at
+all times.
+'''
 from app import bot, config
 from lazbot.schedule import tz
 from lazbot import logger
@@ -28,28 +33,8 @@ def is_opendev():
 
 
 @bot.translate
-def emojify(text):
-    return text.lower().replace(" vs ", " :vs: ")
-
-
-@bot.translate
-def jimify(text):
-    return text.replace("@jim", "@gym")
-
-
-@bot.translate
 def fast_and_loose(text):
     if not open_dev:
         return text
     return ' '.join([word.upper() if not word.startswith(("@", ":"))
                      else word for word in text.split()])
-
-
-@bot.listen("*")
-def remind_jim(channel, text, **kwargs):
-    if text.find("@gym") != -1:
-        bot.post(
-            channel=channel,
-            text='did you mean @jim?',
-            translate=False,
-        )

@@ -1,10 +1,15 @@
+''' autoreactions to users
+
+Will automatically react with specific emoji whenever specified users post a
+message in the channel.
+'''
 from app import bot, config
 from lazbot import logger
 
 reactions = config.get("reactions", {})
 
 
-@bot.listen("*", channel="#smash-chicago")
+@bot.listen("*")
 def react(user, msg):
     from condor import is_opendev
     if not is_opendev():
