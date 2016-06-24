@@ -5,8 +5,10 @@ from lazbot import logger
 from collections import Counter
 from lazbot.models import Message
 import parsedatetime
+from datetime import datetime, timedelta
 
 
+DT_FORMAT = "%Y-%m-%d %H:%M:%S"
 EMOJI = utils.merge({
     "yes": "+1",
     "no": "-1",
@@ -19,19 +21,22 @@ polls = []
 def load():
     global polls
     polls = [Poll.from_json(json) for json in db.get("polls", [])]
+    logger.info("Loaded %s polls", len(polls))
     logger.info("Loaded %s active polls",
                 len([True for p in polls if p.state != Poll.CLOSED]))
 
 
 @bot.teardown(priority=True)
 def save():
-    db["polls"] = [poll.__json__() for poll in polls]
+    db["polls"] = [poll.__json__() for poll in polls
+                   if poll.state != Poll.DELETED]
 
 
 class Poll(object):
     INIT = "initialized"
     OPEN = "open"
     CLOSED = "closed"
+    DELETED = "deleted"
 
     BOOLEAN = "boolean"
 
@@ -43,6 +48,7 @@ class Poll(object):
         self.msg = None
         self.state = Poll.INIT
         self.close_at = None
+        self.created_at = datetime.now()
         self.results = {}
 
         polls.append(self)
@@ -54,7 +60,9 @@ class Poll(object):
             "channel": self.channel.id,
             "state": self.state,
             "msg": self.msg.__json__(),
-            "close_at": self.close_at.isoformat(' ') if self.close_at else None
+            "close_at": self.close_at.isoformat(' ') if self.close_at
+            else None,
+            "created_at": self.created_at.strftime(DT_FORMAT)
         }
 
     @classmethod
@@ -67,14 +75,16 @@ class Poll(object):
             close_at, _ = parsedatetime.Calendar().parseDT(
                 json.get("close_at"))
             poll.schedule(json["close_at"])
+        if "created_at" in json:
+            poll.created_at = datetime.strptime(json["created_at"], DT_FORMAT)
+        else:
+            poll.created_at -= timedelta(days=14)
 
         return poll
 
     def ask(self):
-        self.msg = bot.post(
-            channel=self.channel,
-            text="Poll: {!s} (asked by {!s})".format(self.question,
-                                                     self.requester),
+        self.msg = self.channel.post(
+            "Poll: {!s} (asked by {!s})".format(self.question, self.requester),
         )
 
         if self.type is Poll.BOOLEAN:
@@ -91,26 +101,25 @@ class Poll(object):
         logger.info("Poll closed")
         logger.info(str(self))
 
+        self.msg = self.channel.post(self._results_str())
+        self.msg = self.msg[0] if isinstance(self.msg, list) else self.msg
+
+    def _results_str(self):
         if not any([len(r) for r in self.results.values()]):
-            self.results_msg = bot.post(
-                channel=self.channel,
-                text="Poll Closed: {}, no one voted".format(self.question)
-            )
-        else:
-            self.results_msg = bot.post(
-                channel=self.channel,
-                text="Poll Closed: {}".format(self.question)
+            return "Poll Closed: {}, no one voted".format(
+                self.msg.__url__(self.question))
+
+        output = ["Poll Closed: {}".format(self.msg.__url__(self.question))]
+
+        for (vote, voters) in self.results.items():
+            if not len(voters):
+                continue
+
+            output.append("{} said {}: {}".format(
+                    len(voters), vote, ", ".join(map(str, voters)))
             )
 
-            for (vote, voters) in self.results.items():
-                if len(voters):
-                    bot.post(
-                        channel=self.channel,
-                        text="{} said {}: {}".format(
-                            len(voters), vote, ", ".join(map(str, voters)))
-                    )
-
-        # self.msg.update(self.results_msg.__url__())
+        return output
 
     def tally(self):
         self.results = self.gather()
@@ -119,23 +128,18 @@ class Poll(object):
 
         multi_voters = set([v for (v, cnt) in votes.items() if cnt > 1])
         for result in self.results:
-            self.results[result] = map(
-                bot.get_user, set(self.results[result]) - multi_voters)
+            self.results[result] = set(self.results[result]) - multi_voters
 
     def gather(self):
         return self._gather_boolean() if self.type is Poll.BOOLEAN \
                 else self._gather()
 
     def _gather_boolean(self):
-        reactions_raw = self.msg.get_reactions()
-
-        reactions = {}
+        reactions = self.msg.get_reactions()
         results = {}
-        for reaction in reactions_raw:
-            reactions[reaction["name"]] = reaction["users"]
 
         for (result, emoji) in EMOJI.items():
-            results[result] = set(reactions[emoji])
+            results[result] = reactions[emoji]
 
         return results
 
@@ -165,3 +169,7 @@ class Poll(object):
         else:
             return "{!s} asked {!s}: {}".format(self.requester, self.channel,
                                                 self.question)
+
+    def delete(self):
+        self.state = Poll.DELETED
+        polls.remove(self)
